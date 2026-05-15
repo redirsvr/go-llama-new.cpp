@@ -1,7 +1,5 @@
 # go-llama-new.cpp
 
-Go-обёртка над [llama.cpp](https://github.com/ggml-org/llama.cpp) с API, совместимым с [go-skynet/go-llama.cpp](https://github.com/go-skynet/go-llama.cpp): те же имена типов, функций и экспортируемых переменных (`LLama`, `New`, `Predict`, `SetContext`, `EnableEmbeddings` и т.д.).
-
 Ядро собирается из локальных исходников llama.cpp (не из submodule внутри репозитория). Пути к исходникам задаются в файле `build.conf`, переменные окружения для этого не используются.
 
 ## Требования
@@ -21,8 +19,8 @@ Go-обёртка над [llama.cpp](https://github.com/ggml-org/llama.cpp) с A
 
 ```ini
 # Пути к исходникам llama.cpp (без переменных окружения)
-LLAMA_CPP_PATH=/home/admin/cpp/llama.cpp
-LLAMA_BUILD_PATH=/home/admin/cpp/llama.cpp/build
+LLAMA_CPP_PATH=./llama.cpp
+LLAMA_BUILD_PATH=./llama.cpp/build
 ```
 
 | Параметр | Описание |
@@ -39,8 +37,8 @@ LLAMA_BUILD_PATH=/home/admin/cpp/llama.cpp/build
 ### 1. Сборка llama.cpp
 
 ```bash
-mkdir -p /home/admin/cpp/llama.cpp/build
-cd /home/admin/cpp/llama.cpp/build
+mkdir -p ./llama.cpp/build
+cd ./llama.cpp/build
 
 cmake .. \
   -DCMAKE_BUILD_TYPE=Release \
