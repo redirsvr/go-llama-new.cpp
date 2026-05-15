@@ -2,3 +2,6 @@
 *.a
 binding.o
 libbinding.a
+
+# Исходники и сборка llama.cpp (клонируются/собираются локально)
+llama.cpp/

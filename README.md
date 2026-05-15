@@ -81,13 +81,17 @@ make clean
 
 ### 3. Сборка Go-модуля
 
+**Перед `go run` / `go build` обязательно выполните `make`** — без `libbinding.a` линковка завершится ошибкой `невозможно найти -lbinding`.
+
 ```bash
+make          # libbinding.a + cgo_flags.go
 go build ./...
 ```
 
 Или пример:
 
 ```bash
+make
 go build -o llama-example ./examples/
 go run ./examples/main.go /path/to/model.gguf "Привет, мир"
 ```
@@ -158,9 +162,20 @@ make
 go build ./...
 ```
 
+### `невозможно найти -lbinding`
+
+Архив `libbinding.a` не собран. В корне модуля выполните:
+
+```bash
+make
+ls -la libbinding.a
+```
+
+Не редактируйте `cgo_flags.go` вручную — пути должны быть через `${SRCDIR}/...`; после правок `build.conf` снова запустите `make`.
+
 ### `cannot find -lllama` или `-lllama-common`
 
-Проверьте `LLAMA_BUILD_PATH` в `build.conf` и выполните сборку llama.cpp (шаг 1).
+Проверьте `LLAMA_BUILD_PATH` в `build.conf` и выполните сборку llama.cpp (шаг 1). Убедитесь, что каталог сборки — `llama.cpp/build`, а не внешний путь с `~` (тильда в `build.conf` не раскрывается).
 
 ### CGO отключён
 

@@ -6,7 +6,7 @@ import (
     "os"
     "strings"
 
-    llama "go-llama-new.cpp"
+    llama "github.com/redirsvr/go-llama-new.cpp"
 )
 
 func main() {
