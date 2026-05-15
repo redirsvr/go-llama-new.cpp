@@ -211,6 +211,21 @@ func (l *LLama) Eval(text string, opts ...PredictOption) error {
     return nil
 }
 
+func predictOutputBufSize(nTokens int) int {
+    if nTokens <= 0 {
+        nTokens = 1024
+    }
+    size := nTokens * 32
+    if size < 65536 {
+        size = 65536
+    }
+    const maxBuf = 4 * 1024 * 1024
+    if size > maxBuf {
+        size = maxBuf
+    }
+    return size
+}
+
 func (l *LLama) SpeculativeSampling(ll *LLama, text string, opts ...PredictOption) (string, error) {
     po := NewPredictOptions(opts...)
 
@@ -223,7 +238,7 @@ func (l *LLama) SpeculativeSampling(ll *LLama, text string, opts ...PredictOptio
     if po.Tokens == 0 {
         po.Tokens = 99999999
     }
-    out := make([]byte, po.Tokens)
+    out := make([]byte, predictOutputBufSize(po.Tokens))
 
     reverseCount := len(po.StopPrompts)
     reversePrompt := make([]*C.char, reverseCount)
@@ -248,7 +263,7 @@ func (l *LLama) SpeculativeSampling(ll *LLama, text string, opts ...PredictOptio
         C.float(po.RopeFreqBase), C.float(po.RopeFreqScale), C.float(po.NegativePromptScale), C.CString(po.NegativePrompt),
         C.int(po.NDraft),
     )
-    ret := C.speculative_sampling(params, l.state, ll.state, (*C.char)(unsafe.Pointer(&out[0])), C.bool(po.DebugMode))
+    ret := C.speculative_sampling(params, l.state, ll.state, (*C.char)(unsafe.Pointer(&out[0])), C.int(len(out)), C.bool(po.DebugMode))
     C.llama_free_params(params)
 
     if po.TokenCallback != nil {
@@ -283,7 +298,7 @@ func (l *LLama) Predict(text string, opts ...PredictOption) (string, error) {
     if po.Tokens == 0 {
         po.Tokens = 99999999
     }
-    out := make([]byte, po.Tokens)
+    out := make([]byte, predictOutputBufSize(po.Tokens))
 
     reverseCount := len(po.StopPrompts)
     reversePrompt := make([]*C.char, reverseCount)
@@ -308,7 +323,7 @@ func (l *LLama) Predict(text string, opts ...PredictOption) (string, error) {
         C.float(po.RopeFreqBase), C.float(po.RopeFreqScale), C.float(po.NegativePromptScale), C.CString(po.NegativePrompt),
         C.int(po.NDraft),
     )
-    ret := C.llama_predict(params, l.state, (*C.char)(unsafe.Pointer(&out[0])), C.bool(po.DebugMode))
+    ret := C.llama_predict(params, l.state, (*C.char)(unsafe.Pointer(&out[0])), C.int(len(out)), C.bool(po.DebugMode))
     C.llama_free_params(params)
 
     if po.TokenCallback != nil {

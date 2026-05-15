@@ -75,7 +75,8 @@ static void apply_model_load_options(
     params.n_ubatch     = std::min(params.n_batch, params.n_ubatch);
     params.numa         = numa ? GGML_NUMA_STRATEGY_DISTRIBUTE : GGML_NUMA_STRATEGY_DISABLED;
     params.warmup       = false;
-    params.fit_params   = false;
+    // auto/all (-1/-2): подобрать слои и контекст под свободную VRAM (как ollama)
+    params.fit_params   = (n_gpu < 0);
 
     if (rope_freq_base > 0.0f) {
         params.rope_freq_base = rope_freq_base;
@@ -403,7 +404,7 @@ int llama_tokenize_string(void * params_ptr, void * state_pr, int * result) {
             true);
 }
 
-int llama_predict(void * params_ptr, void * state_pr, char * result, bool debug) {
+int llama_predict(void * params_ptr, void * state_pr, char * result, int result_cap, bool debug) {
     auto * params = static_cast<common_params *>(params_ptr);
     auto * state  = binding_state(state_pr);
     if (state == nullptr || state->ctx == nullptr || state->smpl == nullptr) {
@@ -524,7 +525,6 @@ int llama_predict(void * params_ptr, void * state_pr, char * result, bool debug)
                 break;
             }
 
-            res += piece;
             --n_remain;
 
             if (llama_vocab_is_eog(vocab, id)) {
@@ -541,8 +541,11 @@ int llama_predict(void * params_ptr, void * state_pr, char * result, bool debug)
             }
         }
 
-        for (const auto id : embd) {
-            res += common_token_to_piece(ctx, id);
+        // Только сгенерированные токены (не промпт) — иначе каждый токен дублировался в res.
+        if ((int) embd_inp.size() <= n_consumed) {
+            for (const auto id : embd) {
+                res += common_token_to_piece(ctx, id);
+            }
         }
 
         if ((int) embd_inp.size() <= n_consumed && !params->antiprompt.empty()) {
@@ -558,15 +561,20 @@ int llama_predict(void * params_ptr, void * state_pr, char * result, bool debug)
         common_perf_print(ctx, smpl);
     }
 
-    if (result != nullptr) {
-        std::strncpy(result, res.c_str(), params->n_predict > 0 ? (size_t) params->n_predict : res.size());
-        result[params->n_predict > 0 ? params->n_predict - 1 : res.size()] = '\0';
+    if (result != nullptr && result_cap > 0) {
+        size_t n = res.size();
+        size_t maxn = (size_t) result_cap - 1;
+        if (n > maxn) {
+            n = maxn;
+        }
+        std::memcpy(result, res.c_str(), n);
+        result[n] = '\0';
     }
 
     return 0;
 }
 
-int speculative_sampling(void * params_ptr, void * target_model, void * draft_model, char * result, bool debug) {
+int speculative_sampling(void * params_ptr, void * target_model, void * draft_model, char * result, int result_cap, bool debug) {
     auto * params = static_cast<common_params *>(params_ptr);
     auto * tgt    = binding_state(target_model);
     auto * dft    = binding_state(draft_model);
@@ -697,8 +705,14 @@ int speculative_sampling(void * params_ptr, void * target_model, void * draft_mo
         common_perf_print(ctx_dft, nullptr);
     }
 
-    if (result != nullptr) {
-        std::strncpy(result, res.c_str(), params->n_predict > 0 ? (size_t) params->n_predict : res.size());
+    if (result != nullptr && result_cap > 0) {
+        size_t n = res.size();
+        size_t maxn = (size_t) result_cap - 1;
+        if (n > maxn) {
+            n = maxn;
+        }
+        std::memcpy(result, res.c_str(), n);
+        result[n] = '\0';
     }
 
     return 0;
