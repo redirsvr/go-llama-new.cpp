@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -19,6 +20,7 @@ struct llama_binding_state {
     llama_context *         ctx   = nullptr;
     common_sampler *        smpl  = nullptr;
     bool                    embeddings = false;
+    std::recursive_mutex    mu;
 };
 
 static llama_binding_state * binding_state(void * state_pr) {
@@ -72,11 +74,19 @@ static void apply_model_load_options(
     params.use_mmap     = mmap;
     params.n_gpu_layers = n_gpu;
     params.n_batch      = n_batch > 0 ? n_batch : params.n_batch;
-    params.n_ubatch     = std::min(params.n_batch, params.n_ubatch);
+    // embedding: все токены промпта в одном micro-batch (иначе assert n_ubatch >= n_tokens)
+    if (embeddings) {
+        params.n_ubatch = params.n_batch;
+    } else {
+        params.n_ubatch = std::min(params.n_batch, params.n_ubatch);
+    }
     params.numa         = numa ? GGML_NUMA_STRATEGY_DISTRIBUTE : GGML_NUMA_STRATEGY_DISABLED;
-    params.warmup       = false;
-    // auto/all (-1/-2): подобрать слои и контекст под свободную VRAM (как ollama)
-    params.fit_params   = (n_gpu < 0);
+    params.warmup = false;
+    // auto (-1): fit_params подбирает слои и (на multi-GPU) tensor_split.
+    // Если tensor_split задан вручную — fit_params нельзя (llama.cpp abort).
+    const bool user_tensor_split =
+            tensorsplit != nullptr && tensorsplit[0] != '\0';
+    params.fit_params = (n_gpu < 0) && !user_tensor_split;
 
     if (rope_freq_base > 0.0f) {
         params.rope_freq_base = rope_freq_base;
@@ -190,6 +200,7 @@ int load_state(void * state_pr, char * statefile, char * modes) {
     if (state == nullptr || state->ctx == nullptr) {
         return 1;
     }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
 
     std::vector<llama_token> tokens(llama_n_ctx(state->ctx));
     size_t n_out = 0;
@@ -205,6 +216,7 @@ void save_state(void * state_pr, char * dst, char * modes) {
     if (state == nullptr || state->ctx == nullptr) {
         return;
     }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
     llama_state_save_file(state->ctx, dst, nullptr, 0);
 }
 
@@ -324,6 +336,7 @@ int eval(void * params_ptr, void * state_pr, char * text) {
     if (state == nullptr || state->ctx == nullptr) {
         return 1;
     }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
 
     std::string str = text != nullptr ? text : params->prompt;
     auto embd = common_tokenize(state->ctx, str, true, true);
@@ -344,11 +357,13 @@ int get_embeddings(void * params_ptr, void * state_pr, float * res_embeddings) {
     if (state == nullptr || state->ctx == nullptr || !state->embeddings) {
         return 1;
     }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
 
     auto embd = common_tokenize(state->ctx, params->prompt, true, true);
     if (!embd.empty()) {
         int n_past = 0;
-        if (!common_prompt_batch_decode(state->ctx, embd, n_past, params->n_batch, "", false)) {
+        const int decode_batch = std::max(params->n_batch, params->n_ubatch);
+        if (!common_prompt_batch_decode(state->ctx, embd, n_past, decode_batch, "", false)) {
             return 1;
         }
     }
@@ -368,12 +383,22 @@ int get_embeddings(void * params_ptr, void * state_pr, float * res_embeddings) {
     return 0;
 }
 
+int llama_binding_n_embd(void * state_pr) {
+    auto * state = binding_state(state_pr);
+    if (state == nullptr || state->model == nullptr) {
+        return 0;
+    }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
+    return llama_model_n_embd(state->model);
+}
+
 int get_token_embeddings(void * params_ptr, void * state_pr, int * tokens, int tokenSize, float * res_embeddings) {
     auto * params = static_cast<common_params *>(params_ptr);
     auto * state  = binding_state(state_pr);
     if (state == nullptr || state->ctx == nullptr) {
         return 1;
     }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
 
     std::string text;
     for (int i = 0; i < tokenSize; ++i) {
@@ -389,6 +414,7 @@ int llama_tokenize_string(void * params_ptr, void * state_pr, int * result) {
     if (state == nullptr || state->ctx == nullptr) {
         return -1;
     }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
 
     const llama_vocab * vocab = llama_model_get_vocab(state->model);
     const bool add_bos = llama_vocab_get_add_bos(vocab);
@@ -410,6 +436,7 @@ int llama_predict(void * params_ptr, void * state_pr, char * result, int result_
     if (state == nullptr || state->ctx == nullptr || state->smpl == nullptr) {
         return 1;
     }
+    std::lock_guard<std::recursive_mutex> lock(state->mu);
 
     llama_context * ctx   = state->ctx;
     llama_model *   model = state->model;
@@ -581,6 +608,13 @@ int speculative_sampling(void * params_ptr, void * target_model, void * draft_mo
     if (tgt == nullptr || dft == nullptr || tgt->ctx == nullptr || dft->ctx == nullptr) {
         return 1;
     }
+    std::unique_lock<std::recursive_mutex> tgt_lock(tgt->mu, std::defer_lock);
+    std::unique_lock<std::recursive_mutex> dft_lock(dft->mu, std::defer_lock);
+    if (tgt == dft) {
+        tgt_lock.lock();
+    } else {
+        std::lock(tgt_lock, dft_lock);
+    }
 
     llama_context * ctx_tgt = tgt->ctx;
     llama_context * ctx_dft = dft->ctx;
@@ -631,7 +665,7 @@ int speculative_sampling(void * params_ptr, void * target_model, void * draft_mo
             last_tokens.push_back(id);
 
             auto piece = common_token_to_piece(ctx_tgt, id);
-            if (!tokenCallback(draft_model, const_cast<char *>(piece.c_str()))) {
+            if (!tokenCallback(target_model, const_cast<char *>(piece.c_str()))) {
                 break;
             }
             res += piece;

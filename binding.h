@@ -34,6 +34,8 @@ void* load_model(const char *fname,
 
 int get_embeddings(void* params_ptr, void* state_pr, float * res_embeddings);
 
+int llama_binding_n_embd(void * state_pr);
+
 int get_token_embeddings(void* params_ptr, void* state_pr,  int *tokens, int tokenSize, float * res_embeddings);
 
 void* llama_allocate_params(const char *prompt, int seed, int threads, int tokens,
